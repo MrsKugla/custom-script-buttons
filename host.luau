@@ -14,6 +14,13 @@
 local ui = tern.ui
 
 local CONFIG_NAME = "script-buttons.json"
+
+-- The version shown in the block, read from the manifest so plugin.toml stays
+-- the only place that holds it.
+local VERSION = (function(): string
+	local ok, text = pcall(tern.fs.read, "plugin.toml", 64 * 1024)
+	return if ok then string.match(text, '\nversion%s*=%s*"([^"]+)"') or "?" else "?"
+end)()
 local CELL_W, CELL_H, LANE, BTN_H, INSET = 200, 84, 28, 48, 6
 local FILL_ALPHA = 0.22
 local POLL_MS = 250
@@ -769,6 +776,7 @@ local function setupview(state: State): Node
 				ui.button("Usa", { icon = "check", keys = { "enter" }, actions = { click = "setdir" } }),
 			}),
 		}),
+		textline("ver", { ui.span("Script Buttons v" .. VERSION, "dim mono") }),
 	})
 end
 
@@ -900,7 +908,12 @@ local function mainview(state: State, cx: BlockCx): Node
 	end
 	local children = {
 		ui.node("row", { key = "head", justify = "between" }, {
-			ui.text({ ui.span("Script", "title"), ui.span("  "), ui.span(join(dir, CONFIG_NAME), "muted path") }),
+			ui.text({
+				ui.span("Script", "title"),
+				ui.span("  v" .. VERSION, "dim mono"),
+				ui.span("  "),
+				ui.span(join(dir, CONFIG_NAME), "muted path"),
+			}),
 			ui.node("row", { key = "tools", gap = "xs" }, {
 				ui.button("Nuovo", { icon = "plus", variant = "primary", size = "sm", actions = { click = "new" } }),
 				ui.button("", { icon = "repeat", size = "sm", variant = "quiet", title = "Ricarica il file", actions = { click = "reload" } }),

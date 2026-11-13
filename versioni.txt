@@ -1,0 +1,8 @@
+0.2.0 - [13/11/2026]
+    - Il blocco mostra la versione del plugin accanto al titolo, e nella schermata di scelta della cartella (file: host.luau)
+
+0.1.0 - [13/11/2026]
+    - Primo rilascio: blocco con bottoni colorati collegati a script locali (.ps1, .bat, .cmd, .py, .exe, .vbs, .js, .wsf), configurati in script-buttons.json nella cartella del blocco (file: host.luau, styles.css)
+    - Form per aggiungere e modificare i bottoni, con selettori di Windows per script e colore e note visibili nel tooltip (file: host.luau, pick.ps1)
+    - Riordino collegando i pallini di due bottoni con una freccia, oppure dal menu del tasto destro, che offre anche modifica ed eliminazione (file: host.luau)
+    - Output dello script nel blocco con esito e durata, tasto Ferma e campo per inviare righe di input allo script (file: host.luau, run.ps1)
