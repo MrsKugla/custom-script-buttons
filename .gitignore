@@ -1,0 +1,5 @@
+# Button config: created where the block is opened; holds local script paths and notes.
+script-buttons.json
+
+# API types written by `tern plugin types .` for the installed Tern version.
+tern.d.luau
