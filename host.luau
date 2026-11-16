@@ -29,14 +29,25 @@ local MAX_OUT = 256 * 1024
 local SAVED_OUT = 16 * 1024
 local PRESETS = { "#7c6cf0", "#3b82f6", "#14b8a6", "#22c55e", "#eab308", "#f97316", "#ef4444", "#ec4899" }
 
-type Button = { id: string, label: string, path: string, color: string, note: string }
+-- `params` is appended to the launch command; `{?Nome}` in it is asked at each
+-- launch, and `last` keeps the last value given for each name.
+type Button = {
+	id: string,
+	label: string,
+	path: string,
+	color: string,
+	note: string,
+	params: string,
+	last: { [string]: string },
+}
 type Field = { text: string, caret: number }
-type FormKey = "label" | "path" | "note" | "color"
+type FormKey = "label" | "path" | "params" | "note" | "color"
 type Form = {
 	id: string?,
 	focus: FormKey,
 	label: Field,
 	path: Field,
+	params: Field,
 	note: Field,
 	color: Field,
 	errs: { [string]: string },
@@ -51,6 +62,10 @@ type Run = {
 	log: string,
 	pidfile: string,
 	stopped: boolean,
+	-- The launch arguments, for Rilancia; nil for a run restored from an older save.
+	args: { string }?,
+	-- Script file name and arguments, shown above the output.
+	cmd: string,
 	input: string,
 }
 type State = {
@@ -62,9 +77,18 @@ type State = {
 	arrow: { from: string, to: string }?,
 	form: Form?,
 	confirm: string?,
+	ask: Ask?,
 	run: Run?,
 	picking: boolean,
 	stdin: Field,
+}
+
+-- The values asked before launching a button whose parameters hold `{?Nome}`.
+type Ask = {
+	id: string,
+	names: { string },
+	fields: { Field },
+	focus: number,
 }
 
 -- Text fields: caret counted in code points, sent to Tern in UTF-16 units.
@@ -183,6 +207,107 @@ local function isdir(path: string): boolean
 	return ok
 end
 
+-- Saved launch arguments: the strings of a JSON array.
+local function lastargs(v: { any }): { string }
+	local out = {}
+	for _, x in ipairs(v) do
+		if type(x) == "string" then
+			table.insert(out, x)
+		end
+	end
+	return out
+end
+
+-- The `last` object of a button in the JSON: string values only.
+local function lastvalues(v: any): { [string]: string }
+	local out: { [string]: string } = {}
+	if type(v) == "table" then
+		for k, x in pairs(v) do
+			if type(k) == "string" and type(x) == "string" then
+				out[k] = x
+			end
+		end
+	end
+	return out
+end
+
+-- Launch parameters: split into arguments as a console would, double quotes
+-- grouping spaces (and dropped). A `{?Nome}` placeholder is kept whole, even
+-- with spaces in its name, and stays inside its argument. Returns the
+-- arguments, or nil and why.
+local function splitparams(text: string): ({ string }?, string?)
+	local args: { string } = {}
+	local cur, has, quoted = {}, false, false
+	local i = 1
+	while i <= #text do
+		local c = string.sub(text, i, i)
+		if string.sub(text, i, i + 1) == "{?" then
+			local close = string.find(text, "}", i + 2, true)
+			if not close then
+				return nil, "Segnaposto senza } di chiusura"
+			end
+			if trim(string.sub(text, i + 2, close - 1)) == "" then
+				return nil, "Segnaposto senza nome: scrivi {?Nome}"
+			end
+			table.insert(cur, string.sub(text, i, close))
+			has = true
+			i = close
+		elseif c == '"' then
+			quoted = not quoted
+			has = true
+		elseif not quoted and string.match(c, "%s") then
+			if has then
+				table.insert(args, table.concat(cur))
+			end
+			cur, has = {}, false
+		else
+			table.insert(cur, c)
+			has = true
+		end
+		i += 1
+	end
+	if quoted then
+		return nil, "Virgolette non chiuse"
+	end
+	if has then
+		table.insert(args, table.concat(cur))
+	end
+	return args, nil
+end
+
+-- The placeholder names in `text`, each once, in order of appearance.
+local function placeholders(text: string): { string }
+	local names, seen = {}, {}
+	for raw in string.gmatch(text, "{%?([^}]*)}") do
+		local name = trim(raw)
+		if name ~= "" and not seen[name] then
+			seen[name] = true
+			table.insert(names, name)
+		end
+	end
+	return names
+end
+
+-- The arguments with every placeholder replaced by its value.
+local function expand(args: { string }, values: { [string]: string }): { string }
+	local out = {}
+	for i, a in ipairs(args) do
+		out[i] = (string.gsub(a, "{%?([^}]*)}", function(raw)
+			return values[trim(raw)] or ""
+		end))
+	end
+	return out
+end
+
+-- Arguments as one readable line, quoting the ones with spaces.
+local function showargs(args: { string }): string
+	local parts = {}
+	for i, a in ipairs(args) do
+		parts[i] = if a == "" or string.find(a, "%s") then '"' .. a .. '"' else a
+	end
+	return table.concat(parts, " ")
+end
+
 local function load(dir: string): ({ Button }, string?)
 	local path = join(dir, CONFIG_NAME)
 	if not tern.fs.exists(path) then
@@ -210,6 +335,8 @@ local function load(dir: string): ({ Button }, string?)
 				path = if type(b.path) == "string" then b.path else "",
 				color = (if type(b.color) == "string" then normhex(b.color) else nil) or PRESETS[1],
 				note = if type(b.note) == "string" then b.note else "",
+				params = if type(b.params) == "string" then b.params else "",
+				last = lastvalues(b.last),
 			})
 		end
 	end
@@ -219,7 +346,16 @@ end
 local function store(dir: string, list: { Button })
 	local out = {}
 	for i, b in ipairs(list) do
-		out[i] = { id = b.id, label = b.label, path = b.path, color = b.color, note = if b.note ~= "" then b.note else nil }
+		local last = if next(b.last) then b.last else nil
+		out[i] = {
+			id = b.id,
+			label = b.label,
+			path = b.path,
+			color = b.color,
+			note = if b.note ~= "" then b.note else nil,
+			params = if b.params ~= "" then b.params else nil,
+			last = last,
+		}
 	end
 	tern.fs.write(join(dir, CONFIG_NAME), tern.json.encode({ version = 1, buttons = tern.json.array(out) }, true) .. "\n")
 end
@@ -258,7 +394,7 @@ end
 
 local function usedir(state: State, cx: BlockCx, dir: string)
 	state.dir = dir
-	state.pick, state.arrow, state.form, state.confirm = nil, nil, nil, nil
+	state.pick, state.arrow, state.form, state.confirm, state.ask = nil, nil, nil, nil, nil
 	local list, err = load(dir)
 	state.buttons, state.err = list, err
 	if not err and not tern.fs.exists(join(dir, CONFIG_NAME)) then
@@ -344,9 +480,17 @@ local function readlog(run: Run)
 	end
 end
 
-local function start(state: State, cx: BlockCx, b: Button)
+-- Whether a script is still running in this block (and says so).
+local function busy(state: State, cx: BlockCx): boolean
 	if state.run and state.run.status == nil then
 		cx:toast("info", "«" .. state.run.label .. "» è ancora in esecuzione", "Fermalo o aspetta che finisca")
+		return true
+	end
+	return false
+end
+
+local function start(state: State, cx: BlockCx, b: Button, args: { string })
+	if busy(state, cx) then
 		return
 	end
 	if b.path == "" or not tern.fs.exists(b.path) then
@@ -370,12 +514,16 @@ local function start(state: State, cx: BlockCx, b: Button)
 		pidfile = log .. ".pid",
 		input = log .. ".in",
 		stopped = false,
+		args = args,
+		cmd = basename(b.path) .. (if #args > 0 then " " .. showargs(args) else ""),
 	}
 	state.run = run
 	pcall(tern.fs.write, run.input, "")
 	pcall(tern.fs.write, log, "")
+	local argv = argv_for(b.path)
+	table.move(args, 1, #args, #argv + 1, argv)
 	local env = {
-		CSB_ARGV = tern.json.encode(tern.json.array(argv_for(b.path))),
+		CSB_ARGV = tern.json.encode(tern.json.array(argv)),
 		CSB_LOG = log,
 		CSB_PIDFILE = run.pidfile,
 		CSB_INPUT = run.input,
@@ -621,12 +769,18 @@ end
 local FORM_INPUTS: { [FormKey]: string } = {
 	label = "layer.form.f_label.label",
 	path = "layer.form.f_path.r.path",
+	params = "layer.form.f_params.params",
 	note = "layer.form.f_note.note",
 	color = "layer.form.f_color.r.color",
 }
 local SETUP_INPUT = "main.setup.f.r.dir"
 local STDIN_INPUT = "main.run.stdin.line"
-local FORM_ORDER: { FormKey } = { "label", "path", "note", "color" }
+local FORM_ORDER: { FormKey } = { "label", "path", "params", "note", "color" }
+
+-- The node id of the prompt's field for the i-th placeholder.
+local function askinput(i: number): string
+	return "layer.ask.f" .. i .. ".v"
+end
 
 local function focus(cx: BlockCx, id: string)
 	cx:render()
@@ -656,6 +810,9 @@ local function gridview(state: State, cx: BlockCx): Node
 			table.insert(card, ui.md(b.note))
 		end
 		table.insert(card, ui.text({ ui.span(b.path, "muted path") }))
+		if b.params ~= "" then
+			table.insert(card, ui.text({ ui.span("Parametri: ", "muted"), ui.span(b.params, "code") }))
+		end
 		table.insert(card, ui.text({ ui.span("tasto destro: modifica", "dim") }))
 		table.insert(
 			cells,
@@ -721,14 +878,14 @@ local function runview(state: State): Node?
 			ui.badge(word, tone),
 			ui.text({ ui.span(if run.status == -2 then "" else secs, "muted mono") }),
 		})
-		table.insert(controls, ui.button("Rilancia", { size = "sm", icon = "repeat", actions = { click = "run=" .. run.id } }))
+		table.insert(controls, ui.button("Rilancia", { size = "sm", icon = "repeat", actions = { click = "rerun" } }))
 		table.insert(controls, ui.button("Pulisci", { size = "sm", variant = "quiet", icon = "eraser", actions = { click = "clear" } }))
 	end
 	local endrow = ui.node("row", { key = "end", gap = "xs" }, controls)
 	local body: Node = if run.out == ""
 		then textline("wait", { ui.span(if run.status == nil then "In attesa di output…" else "(nessun output)", "muted") })
 		else ui.node("ansi", { key = "out", text = run.out, follow = true, max = { h = "18lines" } })
-	local parts = { endrow, status, body }
+	local parts = { endrow, status, textline("cmd", { ui.span(run.cmd, "muted mono") }), body }
 	if run.status == nil then
 		table.insert(
 			parts,
@@ -836,6 +993,14 @@ local function formview(state: State, cx: BlockCx): Node?
 				ui.button("Sfoglia…", { icon = "folder-open", busy = state.picking, actions = { click = "browse" } }),
 			}),
 		}),
+		ui.node("field", {
+			key = "f_params",
+			label = "Parametri",
+			error = f.errs.params,
+			hint = "Aggiunti dopo lo script. {?Nome} chiede il valore a ogni lancio",
+		}, {
+			input("params", f.params, f.focus == "params", { placeholder = "-AgentVersion {?Versione}", mono = true }),
+		}),
 		ui.node("field", { key = "f_note", label = "Note", hint = "Quando lanciarlo, cosa fa… Maiusc+Invio per andare a capo" }, {
 			ui.node("editor", {
 				key = "note",
@@ -882,6 +1047,50 @@ local function confirmview(state: State): Node?
 			ui.button("Elimina", { variant = "danger", keys = { "enter" }, actions = { click = "confirmdel" } }),
 		}),
 	})
+end
+
+-- The values for a button's `{?Nome}` placeholders, asked before launching.
+local function askview(state: State): Node?
+	local a = state.ask
+	if not a then
+		return nil
+	end
+	local _, b = find(state.buttons, a.id)
+	if not b then
+		return nil
+	end
+	local values = {}
+	for i, name in ipairs(a.names) do
+		values[name] = a.fields[i].text
+	end
+	local args = splitparams(b.params) or {}
+	local children: { Node } = {}
+	for i, name in ipairs(a.names) do
+		local f = a.fields[i]
+		table.insert(
+			children,
+			ui.node("field", { key = "f" .. i, label = name }, {
+				input("v", f, a.focus == i, { mono = true }),
+			})
+		)
+	end
+	table.insert(children, textline("cmd", { ui.span(basename(b.path) .. " " .. showargs(expand(args, values)), "muted mono") }))
+	table.insert(
+		children,
+		ui.node("row", { key = "foot", gap = "sm", justify = "end" }, {
+			ui.button("Annulla", { variant = "quiet", keys = { "esc" }, actions = { click = "cancelask" } }),
+			ui.button("Lancia", { variant = "primary", icon = "play", keys = { "enter" }, actions = { click = "confirmask" } }),
+		})
+	)
+	return ui.node("overlay", {
+		key = "ask",
+		icon = "play",
+		head = b.label,
+		meta = "valori per questo lancio",
+		size = "sm",
+		modal = true,
+		foot = "layer.ask.foot",
+	}, children)
 end
 
 local function hint(state: State): Node
@@ -967,6 +1176,7 @@ local function openform(state: State, cx: BlockCx, b: Button?)
 		focus = "label",
 		label = field(if b then b.label else ""),
 		path = field(if b then b.path else ""),
+		params = field(if b then b.params else ""),
 		note = field(if b then b.note else ""),
 		color = field(color),
 		errs = {},
@@ -980,7 +1190,7 @@ local function saveform(state: State, cx: BlockCx)
 		return
 	end
 	local label, path = trim(f.label.text), trim(f.path.text)
-	local note = trim(f.note.text)
+	local note, params = trim(f.note.text), trim(f.params.text)
 	path = string.gsub(path, '^"(.*)"$', "%1")
 	local color = normhex(f.color.text)
 	f.errs = {}
@@ -995,6 +1205,10 @@ local function saveform(state: State, cx: BlockCx)
 	if not color then
 		f.errs.color = "Colore hex, ad esempio #7c6cf0"
 	end
+	local _, perr = splitparams(params)
+	if perr then
+		f.errs.params = perr
+	end
 	if next(f.errs) then
 		return
 	end
@@ -1005,18 +1219,103 @@ local function saveform(state: State, cx: BlockCx)
 			_, b = find(list, id)
 		end
 		if b then
-			b.label, b.path, b.color, b.note = label, path, color :: string, note
+			b.label, b.path, b.color, b.note, b.params = label, path, color :: string, note, params
 			return
 		end
 		local top = 0
 		for _, x in ipairs(list) do
 			top = math.max(top, tonumber(string.match(x.id, "^b(%d+)$")) or 0)
 		end
-		table.insert(list, { id = "b" .. tostring(top + 1), label = label, path = path, color = color :: string, note = note })
+		table.insert(list, {
+			id = "b" .. tostring(top + 1),
+			label = label,
+			path = path,
+			color = color :: string,
+			note = note,
+			params = params,
+			last = {},
+		})
 	end)
 	if ok then
 		state.form = nil
 	end
+end
+
+-- After a launch: the script's input field takes the keys.
+local function stdinfocus(state: State, cx: BlockCx)
+	if state.run and state.run.status == nil then
+		state.stdin = field("")
+		focus(cx, STDIN_INPUT)
+	end
+end
+
+-- A click on a button: launches it, first asking the values of its
+-- `{?Nome}` placeholders, prefilled with the last ones used.
+local function launch(state: State, cx: BlockCx, id: string)
+	local _, b = find(state.buttons, id)
+	if not b or busy(state, cx) then
+		return
+	end
+	local args, err = splitparams(b.params)
+	if not args then
+		cx:toast("error", "Parametri non validi", (err or "") .. ": modifica il bottone")
+		return
+	end
+	local names = placeholders(b.params)
+	if #names == 0 then
+		start(state, cx, b, args)
+		stdinfocus(state, cx)
+		return
+	end
+	local fields = {}
+	for i, name in ipairs(names) do
+		fields[i] = field(b.last[name] or "")
+	end
+	state.ask = { id = b.id, names = names, fields = fields, focus = 1 }
+	focus(cx, askinput(1))
+end
+
+-- Launches the asked button with the values given, and keeps them as its
+-- last values in the config file.
+local function confirmask(state: State, cx: BlockCx)
+	local a = state.ask
+	if not a then
+		return
+	end
+	state.ask = nil
+	local values: { [string]: string } = {}
+	for i, name in ipairs(a.names) do
+		values[name] = a.fields[i].text
+	end
+	mutate(state, cx, function(list)
+		local _, b = find(list, a.id)
+		if b then
+			for name, v in pairs(values) do
+				b.last[name] = v
+			end
+		end
+	end)
+	local _, b = find(state.buttons, a.id)
+	local args = if b then splitparams(b.params) else nil
+	if b and args then
+		start(state, cx, b, expand(args, values))
+		stdinfocus(state, cx)
+	end
+end
+
+local function askkey(state: State, a: Ask, key: Key, cx: BlockCx): boolean
+	if key.name == "escape" then
+		state.ask = nil
+	elseif key.name == "enter" then
+		confirmask(state, cx)
+	elseif key.name == "tab" then
+		local step = if key.shift then -1 else 1
+		a.focus = ((a.focus - 1 + step) % #a.fields) + 1
+		focus(cx, askinput(a.focus))
+	else
+		return fedit(a.fields[a.focus], key)
+	end
+	return true
 end
 
 local function swap(state: State, cx: BlockCx, a: string, b: string)
@@ -1089,6 +1388,7 @@ local board: BlockDef<State> = {
 			arrow = nil,
 			form = nil,
 			confirm = nil,
+			ask = nil,
 			run = nil,
 			picking = false,
 		}
@@ -1116,6 +1416,8 @@ local board: BlockDef<State> = {
 				pidfile = "",
 				input = "",
 				stopped = l.stopped == true,
+				args = if type(l.args) == "table" then lastargs(l.args) else nil,
+				cmd = if type(l.cmd) == "string" then l.cmd else "",
 			}
 		end
 		return state
@@ -1127,7 +1429,7 @@ local board: BlockDef<State> = {
 		return if state.dir then "Script · " .. basename(state.dir) else "Script Buttons"
 	end,
 	view = function(state, cx)
-		local layer = formview(state, cx) or confirmview(state)
+		local layer = formview(state, cx) or confirmview(state) or askview(state)
 		return {
 			main = mainview(state, cx),
 			layer = if layer then ui.col({ layer }) else nil,
@@ -1137,6 +1439,10 @@ local board: BlockDef<State> = {
 		local f = state.form
 		if f then
 			return formkey(state, f, key, cx)
+		end
+		local a = state.ask
+		if a then
+			return askkey(state, a, key, cx)
 		end
 		if state.confirm then
 			if key.name == "escape" then
@@ -1192,6 +1498,13 @@ local board: BlockDef<State> = {
 						focus(cx, id)
 					end
 				end
+			elseif state.ask then
+				for i in ipairs(state.ask.fields) do
+					if ev.id == askinput(i) then
+						state.ask.focus = i
+						focus(cx, ev.id)
+					end
+				end
 			elseif ev.id == STDIN_INPUT then
 				focus(cx, STDIN_INPUT)
 			elseif ev.id == SETUP_INPUT then
@@ -1208,15 +1521,25 @@ local board: BlockDef<State> = {
 		elseif act == "send" then
 			send(state, cx)
 		elseif act == "run" then
-			local _, b = find(state.buttons, value)
-			if b then
-				state.pick = nil
-				start(state, cx, b)
-				if state.run and state.run.status == nil and state.run.id == b.id then
-					state.stdin = field("")
-					focus(cx, STDIN_INPUT)
+			state.pick = nil
+			launch(state, cx, value)
+		elseif act == "rerun" then
+			local run = state.run
+			local _, b = find(state.buttons, if run then run.id else "")
+			if run and b and run.args then
+				if not busy(state, cx) then
+					start(state, cx, b, run.args)
+					stdinfocus(state, cx)
 				end
+			elseif b then
+				launch(state, cx, b.id)
+			else
+				cx:toast("error", "Bottone non trovato", "È stato eliminato o la cartella è cambiata")
 			end
+		elseif act == "confirmask" then
+			confirmask(state, cx)
+		elseif act == "cancelask" then
+			state.ask = nil
 		elseif act == "pick" then
 			pick(state, cx, value)
 		elseif act == "new" then
@@ -1315,10 +1638,19 @@ local board: BlockDef<State> = {
 			if #out > SAVED_OUT then
 				out = "…\n" .. string.sub(out, #out - SAVED_OUT + 1)
 			end
-			last = { id = run.id, label = run.label, status = run.status, took = run.took, out = out, stopped = run.stopped }
+			last = {
+				id = run.id,
+				label = run.label,
+				status = run.status,
+				took = run.took,
+				out = out,
+				stopped = run.stopped,
+				args = if run.args then tern.json.array(run.args) else nil,
+				cmd = run.cmd,
+			}
 		elseif run then
 			-- Still running: a reload or restart loses the process callback.
-			last = { id = run.id, label = run.label, out = "" }
+			last = { id = run.id, label = run.label, out = "", args = if run.args then tern.json.array(run.args) else nil, cmd = run.cmd }
 		end
 		return { dir = state.dir, last = last }
 	end,

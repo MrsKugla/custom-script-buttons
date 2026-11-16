@@ -26,11 +26,26 @@ function Quote([string]$a) {
 	return '"' + $s + '"'
 }
 
+# One argument quoted for cmd.exe, which ignores backslash escapes: a batch
+# file sees "a b" as %1 with its quotes, as when typed in a console.
+function QuoteCmd([string]$a) {
+	if ($a -ne '' -and $a -notmatch '[\s"&|<>^(),;=]') { return $a }
+	return '"' + ($a -replace '"', '""') + '"'
+}
+
 # Parameter form, not the pipeline: PowerShell 5.1 would wrap the array in another one.
 $argv = [object[]](ConvertFrom-Json $env:CSB_ARGV)
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $argv[0]
-$psi.Arguments = (@($argv | Select-Object -Skip 1) | ForEach-Object { Quote $_ }) -join ' '
+if ($argv[0] -eq 'cmd.exe') {
+	# cmd /s /c "…": cmd drops only the outer quotes, so a quoted script path
+	# followed by quoted arguments survives intact.
+	$at = [array]::IndexOf($argv, '/c')
+	$cmdline = (@($argv | Select-Object -Skip ($at + 1)) | ForEach-Object { QuoteCmd $_ }) -join ' '
+	$psi.Arguments = (@($argv[1..($at - 1)]) -join ' ') + ' /s /c "' + $cmdline + '"'
+} else {
+	$psi.Arguments = (@($argv | Select-Object -Skip 1) | ForEach-Object { Quote $_ }) -join ' '
+}
 $psi.WorkingDirectory = (Get-Location).Path
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true

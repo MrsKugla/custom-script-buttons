@@ -15,6 +15,9 @@ rispondi da un campo di input.
 - **Note**: un testo libero per bottone, per esempio quando va lanciato lo
   script. Si vede passando sopra il bottone; i bottoni con una nota hanno una
   piccola icona ≡ in basso a destra.
+- **Parametri di avvio**: testo aggiunto dopo lo script (`-AgentVersion 1.2.64`).
+  Un segnaposto `{?Versione}` chiede il valore a ogni lancio, proponendo
+  l'ultimo usato.
 - **Riordino con la freccia**: clic sul pallino di un bottone, poi sul pallino di
   un altro; compare una freccia e i due bottoni si scambiano di posto.
 - **Output nel blocco**: mentre lo script gira vedi lo spinner, il tempo
@@ -102,6 +105,7 @@ Più blocchi aperti sulla stessa cartella condividono gli stessi bottoni.
 | --- | --- |
 | Etichetta | Il testo sul bottone |
 | Script | Percorso del file; **Sfoglia…** apre il selettore file di Windows |
+| Parametri | Facoltativi; aggiunti dopo lo script, vedi [Parametri di avvio](#parametri-di-avvio) |
 | Note | Facoltative; Maiusc+Invio per andare a capo |
 | Colore | Uno degli 8 colori pronti, un hex (`#22c55e`) o **Scegli…** per il selettore colori |
 
@@ -136,20 +140,47 @@ riga inviata compare nell'output in azzurro:
 ![Input inviato a uno script](docs/input.png)
 
 Alla fine compaiono l'esito e la durata; l'output degli errori (stderr) è in
-rosso. **Rilancia** ripete lo script, **Pulisci** chiude il riquadro.
+rosso. **Rilancia** ripete lo script con gli stessi parametri, **Pulisci** chiude
+il riquadro.
 
 ![Script terminato con errore](docs/error.png)
+
+### Parametri di avvio
+
+Il campo **Parametri** del form contiene il testo da aggiungere dopo lo script,
+come lo scriveresti in console:
+
+```text
+-AgentVersion 1.2.64 -Destinazione "C:\Cartella con spazi"
+```
+
+Gli spazi separano i parametri; le virgolette doppie tengono insieme un valore
+con spazi.
+
+Per un valore che cambia a ogni lancio, scrivi un segnaposto `{?Nome}`:
+
+```text
+-AgentVersion {?Versione}
+```
+
+Al clic sul bottone si apre una richiesta con un campo per ogni segnaposto,
+precompilato con l'ultimo valore usato. Sotto i campi c'è l'anteprima del
+comando. Invio lancia, Esc annulla, Tab passa al campo successivo. Il valore di
+un segnaposto resta un unico parametro anche se contiene spazi.
+
+Il comando lanciato compare sopra l'output, e il tooltip del bottone mostra i
+parametri.
 
 ## Tipi di script
 
 | Estensione | Lanciato con |
 | --- | --- |
 | `.ps1` | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File` |
-| `.bat`, `.cmd` | `cmd.exe /d /c` |
+| `.bat`, `.cmd` | `cmd.exe /d /s /c` |
 | `.py`, `.pyw` | `python -u` (UTF-8) |
 | `.exe`, `.com` | direttamente |
 | `.vbs`, `.vbe`, `.js`, `.jse`, `.wsf` | `cscript.exe //nologo` |
-| altre | `cmd.exe /d /c` (associazione del file) |
+| altre | `cmd.exe /d /s /c` (associazione del file) |
 
 ## Limiti
 
@@ -179,11 +210,16 @@ Formato di `script-buttons.json`:
       "label": "Backup NAS",
       "path": "C:\\scripts\\backup.ps1",
       "color": "#7c6cf0",
-      "note": "Ogni venerdì sera."
+      "note": "Ogni venerdì sera.",
+      "params": "-AgentVersion {?Versione}",
+      "last": { "Versione": "1.2.64" }
     }
   ]
 }
 ```
+
+`note`, `params` e `last` compaiono solo se non sono vuoti; `last` contiene
+l'ultimo valore dato a ogni segnaposto.
 
 ## Sviluppo
 

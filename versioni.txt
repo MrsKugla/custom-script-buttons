@@ -1,3 +1,8 @@
+0.3.0 - [16/11/2026]
+    - Parametri di avvio per ogni bottone, aggiunti dopo lo script; un segnaposto {?Nome} chiede il valore a ogni lancio proponendo l'ultimo usato, con anteprima del comando (file: host.luau)
+    - Il comando lanciato compare sopra l'output, il tooltip mostra i parametri e Rilancia ripete il lancio con gli stessi valori (file: host.luau)
+    - Corretto il passaggio a .bat e .cmd di parametri tra virgolette (file: run.ps1)
+
 0.2.0 - [13/11/2026]
     - Il blocco mostra la versione del plugin accanto al titolo, e nella schermata di scelta della cartella (file: host.luau)
 
