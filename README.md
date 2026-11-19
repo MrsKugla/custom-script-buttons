@@ -18,8 +18,9 @@ rispondi da un campo di input.
 - **Parametri di avvio**: testo aggiunto dopo lo script (`-AgentVersion 1.2.64`).
   Un segnaposto `{?Versione}` chiede il valore a ogni lancio, proponendo
   l'ultimo usato.
-- **Riordino con la freccia**: clic sul pallino di un bottone, poi sul pallino di
-  un altro; compare una freccia e i due bottoni si scambiano di posto.
+- **Spostamento dei bottoni**: clic sul pallino di un bottone per prenderlo, poi
+  clic dove metterlo; passando sopra gli altri bottoni una barra mostra dove
+  andrà.
 - **Output nel blocco**: mentre lo script gira vedi lo spinner, il tempo
   trascorso e l'output riga per riga. Alla fine compare l'esito (Completato,
   Errore con il codice di uscita, Fermato) con la durata.
@@ -117,10 +118,13 @@ Le note si vedono passando sopra il bottone:
 
 ### Riordinare, spostare, eliminare
 
-Clic sul pallino in alto a destra di un bottone (diventa rosso), poi sul pallino
-del bottone con cui scambiarlo. Esc annulla.
+Clic sul pallino in alto a destra di un bottone: il pallino diventa rosso, il
+bottone tratteggiato e il cursore diventa quello di spostamento. Passando sopra
+un altro bottone compare una barra sul lato dove andrà: metà sinistra = prima,
+metà destra = dopo. Un clic lo mette lì, gli altri scalano. Un nuovo clic sullo
+stesso pallino o Esc annullano; il pallino di un altro bottone prende quello.
 
-![Scambio di due bottoni con la freccia](docs/swap.gif)
+![Spostamento di un bottone](docs/move.gif)
 
 Il tasto destro su un bottone offre anche **Sposta indietro**, **Sposta avanti** ed
 **Elimina** (con conferma; lo script resta sul disco).

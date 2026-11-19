@@ -1,3 +1,7 @@
+0.4.0 - [18/11/2026]
+    - Spostamento dei bottoni come nella board di Tern: il pallino prende il bottone, il cursore diventa quello di spostamento e passando sopra gli altri bottoni una barra mostra dove andrà (prima o dopo); un clic lo inserisce lì e gli altri scalano (file: host.luau, styles.css)
+    - Tolto lo scambio di due bottoni con la freccia, sostituito dallo spostamento; Esc o un nuovo clic sul pallino annullano (file: host.luau)
+
 0.3.0 - [16/11/2026]
     - Parametri di avvio per ogni bottone, aggiunti dopo lo script; un segnaposto {?Nome} chiede il valore a ogni lancio proponendo l'ultimo usato, con anteprima del comando (file: host.luau)
     - Il comando lanciato compare sopra l'output, il tooltip mostra i parametri e Rilancia ripete il lancio con gli stessi valori (file: host.luau)

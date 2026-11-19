@@ -7,9 +7,11 @@
 -- file is re-read before every change, so blocks sharing a folder don't undo
 -- each other's edits.
 --
--- The buttons are one SVG (exact hex colors, alpha fill, solid border, and
--- the arrow between two linked buttons), with a grid of transparent hit areas
--- laid over it in the same proportions, so it stays aligned when it scales.
+-- The buttons are one SVG (exact hex colors, alpha fill, solid border), with
+-- a grid of transparent hit areas laid over it in the same proportions, so it
+-- stays aligned when it scales. Moving a button: its dot picks it up, then
+-- each button offers a "before" and an "after" half; hovering one draws the
+-- insertion bar (CSS only: plugins never see the pointer), a click drops it.
 
 local ui = tern.ui
 
@@ -24,7 +26,6 @@ end)()
 local CELL_W, CELL_H, LANE, BTN_H, INSET = 200, 84, 28, 48, 6
 local FILL_ALPHA = 0.22
 local POLL_MS = 250
-local ARROW_MS = 900
 local MAX_OUT = 256 * 1024
 local SAVED_OUT = 16 * 1024
 local PRESETS = { "#7c6cf0", "#3b82f6", "#14b8a6", "#22c55e", "#eab308", "#f97316", "#ef4444", "#ec4899" }
@@ -73,8 +74,8 @@ type State = {
 	dirField: Field,
 	buttons: { Button },
 	err: string?,
-	pick: string?,
-	arrow: { from: string, to: string }?,
+	-- The button being moved: picked up by its dot, dropped by a click.
+	carry: string?,
 	form: Form?,
 	confirm: string?,
 	ask: Ask?,
@@ -394,7 +395,7 @@ end
 
 local function usedir(state: State, cx: BlockCx, dir: string)
 	state.dir = dir
-	state.pick, state.arrow, state.form, state.confirm, state.ask = nil, nil, nil, nil, nil
+	state.carry, state.form, state.confirm, state.ask = nil, nil, nil, nil
 	local list, err = load(dir)
 	state.buttons, state.err = list, err
 	if not err and not tern.fs.exists(join(dir, CONFIG_NAME)) then
@@ -619,19 +620,20 @@ local function n(x: number): string
 	return string.format("%.1f", x)
 end
 
-local function rect(x: number, y: number, label: string, color: string, dot: boolean?, running: boolean?, note: boolean?): string
+local function rect(x: number, y: number, label: string, color: string, dot: boolean?, running: boolean?, note: boolean?, carried: boolean?): string
 	local w = CELL_W - 2 * INSET
 	local parts = {
 		string.format(
-			'<rect class="%s" x="%s" y="%s" width="%d" height="%d" rx="8" fill="%s" fill-opacity="%s" stroke="%s" stroke-width="2"/>',
+			'<rect class="%s" x="%s" y="%s" width="%d" height="%d" rx="8" fill="%s" fill-opacity="%s" stroke="%s" stroke-width="2"%s/>',
 			if running then "csb-btn csb-running" else "csb-btn",
 			n(x + INSET + 1),
 			n(y + 1),
 			w - 2,
 			BTN_H - 2,
 			color,
-			if running then "0.42" else tostring(FILL_ALPHA),
-			color
+			if running then "0.42" elseif carried then "0.08" else tostring(FILL_ALPHA),
+			color,
+			if carried then ' stroke-dasharray="6 4"' else ""
 		),
 		string.format(
 			'<text class="csb-label" x="%s" y="%s" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="14" font-weight="500" fill="#e8e8ea">%s</text>',
@@ -673,60 +675,15 @@ local function rect(x: number, y: number, label: string, color: string, dot: boo
 	return table.concat(parts)
 end
 
-local function arrow(ax: number, ay: number, bx: number, by: number, sameRow: boolean, color: string): string
-	local d, tx, ty
-	if sameRow then
-		local cxp, cyp = (ax + bx) / 2, ay - 38
-		d = string.format("M%s %s Q%s %s %s %s", n(ax), n(ay), n(cxp), n(cyp), n(bx), n(by))
-		tx, ty = bx - cxp, by - cyp
-	else
-		local c1y, c2y = ay - 44, by - 44
-		d = string.format("M%s %s C%s %s %s %s %s %s", n(ax), n(ay), n(ax), n(c1y), n(bx), n(c2y), n(bx), n(by))
-		tx, ty = 0, by - c2y
-	end
-	local len = math.sqrt(tx * tx + ty * ty)
-	if len == 0 then
-		len = 1
-	end
-	local ux, uy = tx / len, ty / len
-	local bxp, byp = bx - ux * 9, by - uy * 9
-	local head = string.format(
-		"M%s %s L%s %s L%s %s Z",
-		n(bx),
-		n(by),
-		n(bxp - uy * 5),
-		n(byp + ux * 5),
-		n(bxp + uy * 5),
-		n(byp - ux * 5)
-	)
-	return string.format(
-		'<g class="csb-arrow"><path d="%s" fill="none" stroke="%s" stroke-width="2.2" stroke-linecap="round"/><path d="%s" fill="%s"/></g>',
-		d,
-		color,
-		head,
-		color
-	)
-end
-
 local function gridsvg(state: State, cols: number): (string, number, number)
 	local rows = math.ceil(#state.buttons / cols)
 	local w, h = cols * CELL_W, rows * CELL_H
-	local pos: { [string]: { number } } = {}
 	local parts = {}
 	local running = if state.run and state.run.status == nil then state.run.id else nil
 	for i, b in ipairs(state.buttons) do
 		local c, r = (i - 1) % cols, (i - 1) // cols
-		local x, y = c * CELL_W, r * CELL_H + LANE
-		pos[b.id] = { x, y, r }
-		local lit = state.pick == b.id or (state.arrow ~= nil and (state.arrow.from == b.id or state.arrow.to == b.id))
-		table.insert(parts, rect(x, y, b.label, b.color, lit, running == b.id, b.note ~= ""))
-	end
-	if state.arrow then
-		local a, b = pos[state.arrow.from], pos[state.arrow.to]
-		local _, src = find(state.buttons, state.arrow.from)
-		if a and b and src then
-			table.insert(parts, arrow(a[1] + CELL_W / 2, a[2] - 3, b[1] + CELL_W / 2, b[2] - 4, a[3] == b[3], src.color))
-		end
+		local carried = state.carry == b.id
+		table.insert(parts, rect(c * CELL_W, r * CELL_H + LANE, b.label, b.color, carried, running == b.id, b.note ~= "", carried))
 	end
 	local svg = string.format(
 		'<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">%s</svg>',
@@ -814,25 +771,29 @@ local function gridview(state: State, cx: BlockCx): Node
 			table.insert(card, ui.text({ ui.span("Parametri: ", "muted"), ui.span(b.params, "code") }))
 		end
 		table.insert(card, ui.text({ ui.span("tasto destro: modifica", "dim") }))
-		table.insert(
-			cells,
-			ui.el("div", { key = b.id, class = "csb-cell" }, {
-				ui.el("div", {
-					key = "hit",
-					class = "csb-hit",
-					role = "csb.hit",
-					hovercard = ui.col(card),
-					actions = { click = "run=" .. b.id, menu = menu(b, i, count) },
-				}),
-				ui.el("div", {
-					key = "dot",
-					class = "csb-dothit",
-					role = "csb.dot",
-					title = "Collega per scambiare",
-					actions = { click = "pick=" .. b.id },
-				}),
-			})
-		)
+		local parts = {
+			ui.el("div", {
+				key = "hit",
+				class = "csb-hit",
+				role = "csb.hit",
+				hovercard = ui.col(card),
+				actions = { click = "run=" .. b.id, menu = menu(b, i, count) },
+			}),
+			ui.el("div", {
+				key = "dot",
+				class = "csb-dothit",
+				role = "csb.dot",
+				title = if state.carry == b.id then "Annulla lo spostamento" else "Sposta questo bottone",
+				actions = { click = "carry=" .. b.id },
+			}),
+		}
+		if state.carry then
+			-- Two halves over the whole cell: dropping on the left half puts the
+			-- carried button before this one, on the right half after it.
+			table.insert(parts, ui.el("div", { key = "before", class = "csb-drop csb-before", actions = { click = "drop=" .. i } }))
+			table.insert(parts, ui.el("div", { key = "after", class = "csb-drop csb-after", actions = { click = "drop=" .. (i + 1) } }))
+		end
+		table.insert(cells, ui.el("div", { key = b.id, class = "csb-cell" }, parts))
 	end
 	return ui.node("image", {
 		key = "grid",
@@ -843,7 +804,7 @@ local function gridview(state: State, cx: BlockCx): Node
 		h = h,
 		actions = { click = "noop" },
 	}, {
-		ui.el("div", { key = "hits", class = "csb-hits csb-n" .. tostring(cols) }, cells),
+		ui.el("div", { key = "hits", class = "csb-hits csb-n" .. tostring(cols) .. (if state.carry then " csb-carrying" else "") }, cells),
 	})
 end
 
@@ -1094,19 +1055,16 @@ local function askview(state: State): Node?
 end
 
 local function hint(state: State): Node
-	if state.arrow then
-		return textline("hint", { ui.span("Scambio in corso…", "accent") })
-	end
-	if state.pick then
-		local _, b = find(state.buttons, state.pick)
+	if state.carry then
+		local _, b = find(state.buttons, state.carry)
 		return textline("hint", {
-			ui.span("Clicca il pallino del bottone da scambiare con «" .. (if b then b.label else "?") .. "»  ", "accent"),
+			ui.span("Clicca dove mettere «" .. (if b then b.label else "?") .. "»: metà sinistra = prima, metà destra = dopo  ", "accent"),
 			ui.span("esc", "key"),
 			ui.span(" annulla", "muted"),
 		})
 	end
 	return textline("hint", {
-		ui.span("Clic: lancia · pallino → pallino: scambia · tasto destro: modifica, sposta, elimina", "muted"),
+		ui.span("Clic: lancia · pallino: sposta · tasto destro: modifica, sposta, elimina", "muted"),
 	})
 end
 
@@ -1318,39 +1276,22 @@ local function askkey(state: State, a: Ask, key: Key, cx: BlockCx): boolean
 	return true
 end
 
-local function swap(state: State, cx: BlockCx, a: string, b: string)
+-- Moves the carried button to slot `at` (1 = first, #list + 1 = last), as
+-- counted before it is taken out.
+local function drop(state: State, cx: BlockCx, at: number)
+	local id = state.carry
+	state.carry = nil
+	if not id then
+		return
+	end
 	mutate(state, cx, function(list)
-		local i = find(list, a)
-		local j = find(list, b)
-		if i and j then
-			list[i], list[j] = list[j], list[i]
-		end
-	end)
-end
-
-local function pick(state: State, cx: BlockCx, id: string)
-	if state.arrow then
-		return
-	end
-	if not state.pick then
-		state.pick = id
-		return
-	end
-	if state.pick == id then
-		state.pick = nil
-		return
-	end
-	local from = state.pick
-	state.pick = nil
-	local link = { from = from, to = id }
-	state.arrow = link
-	tern.timer(ARROW_MS, function()
-		if state.arrow ~= link or not alive(cx.pane) then
+		local from = find(list, id)
+		if not from then
 			return
 		end
-		state.arrow = nil
-		swap(state, cx, link.from, link.to)
-		cx:render()
+		local b = table.remove(list, from)
+		local to = if at > from then at - 1 else at
+		table.insert(list, math.clamp(to, 1, #list + 1), b)
 	end)
 end
 
@@ -1384,8 +1325,7 @@ local board: BlockDef<State> = {
 			stdin = field(""),
 			buttons = {},
 			err = nil,
-			pick = nil,
-			arrow = nil,
+			carry = nil,
 			form = nil,
 			confirm = nil,
 			ask = nil,
@@ -1482,8 +1422,8 @@ local board: BlockDef<State> = {
 				return true
 			end
 		end
-		if key.name == "escape" and (state.pick or state.arrow) then
-			state.pick, state.arrow = nil, nil
+		if key.name == "escape" and state.carry then
+			state.carry = nil
 			return true
 		end
 		return false
@@ -1521,7 +1461,7 @@ local board: BlockDef<State> = {
 		elseif act == "send" then
 			send(state, cx)
 		elseif act == "run" then
-			state.pick = nil
+			state.carry = nil
 			launch(state, cx, value)
 		elseif act == "rerun" then
 			local run = state.run
@@ -1540,8 +1480,11 @@ local board: BlockDef<State> = {
 			confirmask(state, cx)
 		elseif act == "cancelask" then
 			state.ask = nil
-		elseif act == "pick" then
-			pick(state, cx, value)
+		elseif act == "carry" then
+			-- The carried button's dot puts it back; another dot picks that one up.
+			state.carry = if state.carry == value then nil else value
+		elseif act == "drop" then
+			drop(state, cx, tonumber(value) or 0)
 		elseif act == "new" then
 			openform(state, cx, nil)
 		elseif act == "edit" then
